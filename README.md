@@ -1,3 +1,10 @@
+# NOTE NOTE NOTE
+
+*This is a fork of https://github.com/jacobsalmela/pi-hole*
+
+All original credit is due to this project.  I've made a bunch of local changes to make the code a bit more sane.
+
+
 # Raspberry Pi Ad Blocker 
 **A black hole for ads, hence Pi-hole**
 
