@@ -17,8 +17,8 @@ sources=('https://adaway.org/hosts.txt'
 
 # Variables for various stages of downloading and formatting the list
 adList=/etc/pihole/gravity.list
-origin=/etc/pihole
-piholeDir=/etc/pihole
+piholeDir=./output
+origin=$piholeDir
 justDomainsExtension=domains
 matter=pihole.0.matter.txt
 andLight=pihole.1.andLight.txt
@@ -45,36 +45,7 @@ if [[ -d $piholeDir ]];then
 	:
 else
 	echo "** Creating pihole directory..."
-	sudo mkdir $piholeDir
-fi
-
-# Add additional swap to prevent the "Error fork: unable to allocate memory" message:  https://github.com/jacobsalmela/pi-hole/issues/37
-function createSwapFile()
-#########################
-	{
-	echo "** Creating more swap space to accomodate large solar masses..."
-	sudo dphys-swapfile swapoff
-	sudo curl -s -o /etc/dphys-swapfile https://raw.githubusercontent.com/jacobsalmela/pi-hole/master/advanced/dphys-swapfile
-	sudo dphys-swapfile setup
-	sudo dphys-swapfile swapon
-	}
-	
-
-if [[ -n "$noSwap" ]]; then
-    # if $noSwap is set, don't do anything
-    :
-elif [[ -f /etc/dphys-swapfile ]];then
-	swapSize=$(cat /etc/dphys-swapfile | grep -m1 CONF_SWAPSIZE | cut -d'=' -f2)
-	if [[ $swapSize != 500 ]];then
-		mv /etc/dphys-swapfile /etc/dphys-swapfile.orig
-		echo "** Current swap size is $swapSize"
-		createSwapFile
-	else
-		:
-	fi
-else
-	echo "** No swap file found.  Creating one..."
-	createSwapFile
+	mkdir $piholeDir
 fi
 
 # Loop through domain list.  Download each one and remove commented lines (lines beginning with '# 'or '/') and blank lines
