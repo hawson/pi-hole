@@ -3,7 +3,9 @@
 # Compiles a list of ad-serving domains by downloading them from multiple sources 
 
 # This script should only be run after you have a static IP address set on the Pi
-piholeIP=$(hostname -I)
+#piholeIP=$(hostname -I)
+piholeIP='192.168.1.15 fd00::5054:ff:feae:a812'
+piholeIP='127.0.0.1'
 
 # Ad-list sources--one per line in single quotes
 sources=('https://adaway.org/hosts.txt'
@@ -16,47 +18,77 @@ sources=('https://adaway.org/hosts.txt'
 'http://winhelp2002.mvps.org/hosts.txt')
 
 # Variables for various stages of downloading and formatting the list
-adList=/etc/pihole/gravity.list
-piholeDir=./output
-origin=$piholeDir
+piholeDir=.
+confdir=$piholeDir
+origin=/BAD_USING_ORIGIN
+
+
+#Where tmp lists are stored, working space for tmp files
+tmp_dir=/tmp/pihole
+
+rm $tmp_dir/tmp*
+
+#cache time, in seconds
+cache_age=3600
+cache_file=$tmp_dir/cache_file.txt
+
+conf_file=$conf_dir/pihole.conf
 justDomainsExtension=domains
-matter=pihole.0.matter.txt
-andLight=pihole.1.andLight.txt
-supernova=pihole.2.supernova.txt
-eventHorizon=pihole.3.eventHorizon.txt
-accretionDisc=pihole.4.accretionDisc.txt
-eyeOfTheNeedle=pihole.5.wormhole.txt
+
+aggregate_file=$tmp_dir/aggregate.txt
+
 blacklist=$piholeDir/blacklist.txt
-latentBlacklist=$origin/latentBlacklist.txt
 whitelist=$piholeDir/whitelist.txt
-latentWhitelist=$origin/latentWhitelist.txt
+
+final_output_file=$piholeDir/pihole_hosts.lst
 
 # After setting defaults, check if there's local overrides
 if [[ -r $piholeDir/pihole.conf ]];then
-    echo "** Local calibration requested..."
-	. $piholeDir/pihole.conf
+    echo "** Loading $conf_file"
+	. $conf_file
 fi
-
-
-echo "** Neutrino emissions detected..."
 
 # Create the pihole resource directory if it doesn't exist.  Future files will be stored here
-if [[ -d $piholeDir ]];then
-	:
-else
-	echo "** Creating pihole directory..."
-	mkdir $piholeDir
+if [[ ! -d $tmp_dir ]];then
+	echo "** Creating working $tmp_dir directory..."
+	mkdir $tmp_dir
 fi
 
-# Loop through domain list.  Download each one and remove commented lines (lines beginning with '# 'or '/') and blank lines
-for ((i = 0; i < "${#sources[@]}"; i++))
-do
-	url=${sources[$i]}
+
+function clean_list {
+    file=$1
+    saveLocation=$2
+
+	if [[ -s "$file" ]];then
+        echo -n "Cleaning $file..."
+		# Remove comments and print only the domain name
+		# Most of the lists downloaded are already in hosts file format but the spacing/formating is not contigious
+		# This helps with that and makes it easier to read
+		# It also helps with debugging so each stage of the script can be researched more in depth
+		awk '($1 !~ /^#/) { if (NF>1) {print $2} else {print $1}}' $file | \
+			sed -nr -e 's/\.{2,}/./g' -e '/\./p' > $saveLocation
+		echo "Done."
+	else
+		echo "Skipping list because it is empty."
+	fi
+
+}
+
+function fetch_list {
+    url=$1
+
 	# Get just the domain from the URL
 	domain=$(echo "$url" | cut -d'/' -f3)
 	
 	# Save the file as list.#.domain
-	saveLocation=$origin/list.$i.$domain.$justDomainsExtension
+	saveLocation=$tmp_dir/list.$i.$domain.$justDomainsExtension
+
+    touch -d "-$cache_age seconds" $cache_file
+    if [ $cache_file -ot $saveLocation ]; then
+        echo "Cache not expired: $saveLocation" 
+        return
+    fi
+
 
 	agent="Mozilla/10.0"
 	
@@ -79,91 +111,93 @@ do
 	esac
 
 	# tmp file, so we don't have to store the (long!) lists in RAM
-	tmpfile=`mktemp`
+    # Note that we check against the ultimate saveLocation, and not
+    # the tmpfile (this is because we clean raw list after getting it)
+	tmpfile=`mktemp --tmpdir=$tmp_dir`
 	timeCheck=""
 	if [ -r $saveLocation ]; then 
 		timeCheck="-z $saveLocation"
 	fi
+
 	CMD="$cmd -s $timeCheck -A '$agent' $url > $tmpfile"
 	echo "running [$CMD]"
-	$cmd -s $timeCheck -A "$agent" $url > $tmpfile
+    $cmd -s $timeCheck -A "$agent" $url > $tmpfile
 
-	
-	if [[ -s "$tmpfile" ]];then
-		# Remove comments and print only the domain name
-		# Most of the lists downloaded are already in hosts file format but the spacing/formating is not contigious
-		# This helps with that and makes it easier to read
-		# It also helps with debugging so each stage of the script can be researched more in depth
-		awk '($1 !~ /^#/) { if (NF>1) {print $2} else {print $1}}' $tmpfile | \
-			sed -nr -e 's/\.{2,}/./g' -e '/\./p' > $saveLocation
-		echo "Done."
-	else
-		echo "Skipping list because it does not have any new entries."
-	fi
+    clean_list $tmpfile $saveLocation
 
 	# cleanup
-	rm -f $tmpfile
+	rm -vf $tmpfile
+}
+
+
+function consolidate_list {
+    aggregate_file=$1
+    output=$2
+    whitelist=$3
+
+    numberOf=$(wc -l $aggregate_file)
+	echo "** $numberOf aggregate domains..."
+
+    sort -u $aggregate_file | sed "s/^/$piholeIP /" > $output
+
+    numberOf=$(wc -l $output)
+	echo "** $numberOf deduped domains..."
+
+    if [ -r "$whitelist" ]; then
+        grep -v -f $whitelist $output > $tmp_dir/tmp.final
+        mv $tmp_dir/tmp.final $output
+    fi
+}
+
+# Loop through domain list.  Download each one and remove commented lines (lines beginning with '# 'or '/') and blank lines
+for ((i = 0; i < "${#sources[@]}"; i++))
+do
+	url=${sources[$i]}
+    fetch_list $url	
 done
 
+
 # Find all files with the .domains extension and compile them into one file and remove CRs
-echo "** Aggregating list of domains..."
-find $origin/ -type f -name "*.$justDomainsExtension" -exec cat {} \; | tr -d '\r' > $origin/$matter
+echo "** Aggregating lists of domains..."
+find $tmp_dir -type f -name "*.$justDomainsExtension" | xargs cat | tr -d '\r' > $aggregate_file
+
 
 # Append blacklist entries if they exist
 if [[ -r $blacklist ]];then
-	numberOf=$(cat $blacklist | sed '/^\s*$/d' | wc -l)
-	echo "** Blacklisting $numberOf domain(s)..."
-	cat $blacklist >> $origin/$matter
-fi
-
-###########################
-function gravity_advanced() {
-
-	numberOf=$(wc -l $origin/$andLight)
-	echo "** $numberOf domains being pulled in by gravity..."	
-
-	# Remove carriage returns and preceding whitespace
-	# not really needed anymore?
-	cp $origin/$andLight $origin/$supernova 
-
-	# Sort and remove duplicates
-	sort -u  $origin/$supernova > $origin/$eventHorizon
-	numberOf=$(wc -l $origin/$eventHorizon)
-	echo "** $numberOf unique domains trapped in the event horizon."
-
-	# Format domain list as "192.168.x.x domain.com"
-	echo "** Formatting domains into a HOSTS file..."
-	awk '{print "'"$piholeIP"'" $1}' $origin/$eventHorizon > $origin/$accretionDisc
-
-	# Copy the file over as /etc/pihole/gravity.list so dnsmasq can use it
-	sudo cp $origin/$accretionDisc $adList
-	kill -HUP $(pidof dnsmasq)
-}
-	
-# Whitelist (if applicable) then remove duplicates and format for dnsmasq
-if [[ -r $whitelist ]];then
-	# Remove whitelist entries
-	numberOf=$(cat $whitelist | sed '/^\s*$/d' | wc -l)
-	plural=; [[ "$numberOf" != "1" ]] && plural=s
-	echo "** Whitelisting $numberOf domain${plural}..."
-
-	# Append a "$" to the end, prepend a "^" to the beginning, and
-	# replace "." with "\." of each line to turn each entry into a
-	# regexp so it can be parsed out with grep -x
-	awk -F '[# \t]' 'NF>0&&$1!="" {print "^"$1"$"}' $whitelist | sed 's/\./\\./g' > $latentWhitelist
-else
-	rm $latentWhitelist
+    clean_blacklist=$tmp_dir/cleaned_blacklist.txt
+    clean_list $blacklist $clean_blacklist
+    numberOf=$(wc -l $clean_blacklist)
+	plural=""; [[ "$numberOf" != "1" ]] && plural=s
+	echo "** Blacklisting $numberOf domain${plural}..."
+	cat $clean_blacklist >> $aggregate_file
 fi
 
 # Prevent our sources from being pulled into the hole
+clean_whitelist=$tmp_dir/cleaned_whitelist.txt
+
 plural=; [[ "${#sources[@]}" != "1" ]] && plural=s
 echo "** Whitelisting ${#sources[@]} ad list source${plural}..."
 for url in ${sources[@]}
 do
-	echo "$url" | awk -F '/' '{print "^"$3"$"}' | sed 's/\./\\./g' >> $latentWhitelist
+    echo "$url" | awk -F '/' '{print "^"$3"$"}' | sed 's/\./\\./g' >> $clean_whitelist
 done
 
-# Remove whitelist entries from deduped list
-grep -vxf $latentWhitelist $origin/$matter > $origin/$andLight
 
-gravity_advanced
+# Whitelist (if applicable) then remove duplicates and format for dnsmasq
+if [[ -r "$whitelist" ]];then
+	# Remove whitelist entries
+    clean_list $whitelist $clean_whitelist
+
+
+    sed -i -e 's/^/^/' -e 's/\./\\./g' -e 's/$/$/' $clean_whitelist 
+
+    numberOf=$(wc -l $clean_whitelist)
+	plural=; [[ "$numberOf" != "1" ]] && plural=s
+	echo "** Whitelisting $numberOf domain${plural}..."
+
+fi
+
+
+# Dedupe, etc
+consolidate_list $aggregate_file $final_output_file $clean_whitelist
+
