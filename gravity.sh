@@ -2,6 +2,8 @@
 # http://pi-hole.net
 # Compiles a list of ad-serving domains by downloading them from multiple sources 
 
+export LC_ALL=C
+
 # This script should only be run after you have a static IP address set on the Pi
 #piholeIP=$(hostname -I)
 piholeIP='192.168.1.15 fd00::5054:ff:feae:a812'
@@ -26,7 +28,7 @@ origin=/BAD_USING_ORIGIN
 #Where tmp lists are stored, working space for tmp files
 tmp_dir=/tmp/pihole
 
-rm $tmp_dir/tmp*
+rm -f $tmp_dir/tmp*
 
 #cache time, in seconds
 cache_age=3600
@@ -138,7 +140,11 @@ function consolidate_list {
     numberOf=$(wc -l $aggregate_file)
 	echo "** $numberOf aggregate domains..."
 
-    sort -u $aggregate_file | sed "s/^/$piholeIP /" > $output
+    tr 'A-Z' 'a-z' < $aggregate_file | \
+        sort -u | \
+        perl -ple '$_=join(".", reverse split /\./)' | \
+        sort | \
+        perl -ple '$_=join(".", reverse split /\./)' > $output
 
     numberOf=$(wc -l $output)
 	echo "** $numberOf deduped domains..."
@@ -147,6 +153,7 @@ function consolidate_list {
         grep -v -f $whitelist $output > $tmp_dir/tmp.final
         mv $tmp_dir/tmp.final $output
     fi
+    sed -i "s/^/$piholeIP /" $output
 }
 
 # Loop through domain list.  Download each one and remove commented lines (lines beginning with '# 'or '/') and blank lines
